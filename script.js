@@ -1,3 +1,59 @@
+(function($) {
+  $(document).ready(function() {
+    //Multi-select jQuery
+    $('#message-type-select').change(function() {
+      //Uncheck everything before starting
+      $('.cpm_multi').attr('checked', false);
+      
+      if($(this).val() == 'read') {
+        $('.cpm_multi_read').attr('checked', true);
+      }
+      if($(this).val() == 'unread') {
+        $('.cpm_multi_unread').attr('checked', true);
+      }
+      if($(this).val() == 'all') {
+        $('.cpm_multi').attr('checked', true);
+      }
+      if($(this).val() == 'none') {
+        $('.cpm_multi').attr('checked', false);
+      }
+      
+      return false;
+    });
+    
+    $('a#messages-delete').click(function(e) {
+      e.preventDefault();
+      
+      var answer = confirm(CPML10N.confirm_multi_delete);
+      
+      var message_ids = new Array();
+      $("input:checkbox[name=message_ids]:checked").each(function() {
+        message_ids.push($(this).val());
+      });
+      
+      var data = {
+        action: 'cpm_multi_delete',
+        ids: message_ids
+      };
+      
+      if(answer) {
+        $('a#messages-delete').hide();
+        $('img#messages-delete-pending').show();
+        
+        jQuery.post(CPML10N.ajaxurl, data, function(response) {
+          if(response == "Success") {
+            window.location.href = window.location.href;
+          } else {
+            alert(CPML10N.nothing_to_delete);
+            $('a#messages-delete').show();
+            $('img#messages-delete-pending').hide();
+          }
+        });
+      }
+    });
+  });
+})(jQuery);
+
 // Surrounds the selected text with text1 and text2.
 function surroundTheText(text1, text2, textarea)
 {
@@ -86,4 +142,10 @@ function fillText(v) {
 	e = document.getElementById('search-q');
 	e.value=v;
 	document.getElementById('results').style.display="none";
+}
+function placeHolder(ele) {
+  if (ele.value === ele.defaultValue)
+    ele.value = '';
+  else if (ele.value === '')
+    ele.value = ele.defaultValue;
 }
