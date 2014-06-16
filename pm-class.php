@@ -11,6 +11,9 @@ if (!class_exists("cartpaujPM"))
     {
       $this->setupLinks();
       $this->adminOps = $this->getAdminOps();
+	  // Assign numeric user ID corresponding to the messaging administrator; 0 if none.
+      $this->admin_user_id = $this->adminOps['admin_user_login'] ?
+      $this->convertToID($this->adminOps['admin_user_login']) : 0;
     }
 
     function pmActivate()
@@ -41,12 +44,21 @@ if (!class_exists("cartpaujPM"))
             `from_del` int(11) NOT NULL default '0',
             PRIMARY KEY (`id`))
             {$charset_collate};";
+      $sqlAtts = "CREATE TABLE {$this->tableAtts} ("          .
+            "`id`         int(11)      NOT NULL auto_increment, " .
+             "`message_id` int(11)      NOT NULL, "                .
+            "`filename`   varchar(255) NOT NULL DEFAULT '', "     .
+            "`mimetype`   varchar(255) NOT NULL DEFAULT '', "     .
+            "`contents`   longblob     NOT NULL, "                .
+            "PRIMARY KEY (`id`), "                                .
+             "KEY `message_id` (`message_id`)"                     .
+            ") $charset_collate;";
 
       require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
 
       dbDelta($sqlMsgs);
+	  dbDelta($sqlAtts);
     }
-
     function widget($args)
     {
       global $user_ID;
@@ -54,17 +66,32 @@ if (!class_exists("cartpaujPM"))
       echo $args['before_widget'];
       echo $args['before_title'].__("Messages", "cartpaujpm").$args['after_title'];
       if (!$uData)
-        echo __("Login to view your messages", "cartpaujpm");
+        echo "<div id='cartpauj-pm-widget'><div class='pm-messageBox info'>".__("Login to view your messages", "cartpaujpm")."</div>";
       else
       {
         $URL = get_permalink($this->getPageID());
         $numNew = $this->getNewMsgs();
         $numAnn = $this->getAnnouncementsNum();
-        echo __("Hi", "cartpaujpm")." ".$uData->user_login.",<br/>".
-        __("You have", "cartpaujpm")." (<font color='red'>".$numNew."</font>) ".__("new messages", "cartpaujpm")."<br/>".
-        __("There are", "cartpaujpm")." (".$numAnn.") ".__("announcement(s)", "cartpaujpm")."<br/>".
-        "<a href='".$URL."'>".__("View Message Box", "cartpaujpm")."</a>";
+	  echo "<div id='cartpauj-pm-widget'>";
+    //START AVATAR LINKS MINGLE FORUM
+		if(!function_exists('is_plugin_active'))
+			require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+		if(is_plugin_active('mingle-forum/wpf-main.php'))
+		{
+		
+      echo " <a  title='".$uData->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$user_ID."' > ".get_avatar($user_ID, 52)." </a> ";
+		}
+		
+		else
+		{
+			  echo " <a  title='".$uData->user_login." ' href='". home_url()."/wp-admin/profile.php' > ".get_avatar($user_ID, 52)." </a> ";
+		}             
+    //END  AVATAR LINKS MINGLE FORUM 		  
+      echo  " <a title='".__("You have", "cartpaujpm")." (".$numNew.") ".__("new messages", "cartpaujpm")."' class='icon-message-box' href='".$URL."'>".__("Message Box", "cartpaujpm")." <span>".$numNew."</span> </a>
+	   <br/><a title='". __("There are", "cartpaujpm")." (".$numAnn.") ".__("announcement(s)", "cartpaujpm")."' class='icon-viewannouncements' href='".$URL."?pmaction=viewannouncements'>".__("Announcements", "cartpaujpm")."       <span class='widget-announcement' >".$numAnn."</span></a><br/>
+	   <a  aria-hidden='true' class='icon-logout' href='" . wp_logout_url($this->options['forum_logout_redirect_url']) . "' >" . __('Logout', 'cartpaujpm') . "</a>";
       }
+	  echo "</div>";
       echo $args['after_widget'];
     }
 
@@ -85,13 +112,17 @@ if (!class_exists("cartpaujPM"))
     var $jsURL = "";
 
     var $tableMsgs = "";
+	var $tableAtts = "";
+
+    // The user ID of the messaging administrator. 0 means there is none.
+    var $admin_user_id = 0;
 
     function jsInit()
     {
       if($_GET['pmjsscript'] == '1')
       {
         global $wpdb, $user_ID;
-        require_once('js/search.php');
+        require_once('../cartpauj-pm3/js/search.php');
       }
     }
 
@@ -105,16 +136,20 @@ if (!class_exists("cartpaujPM"))
       $this->jsURL = $this->pluginURL."js/";
 
       $this->tableMsgs = $table_prefix."cartpauj_pm_messages";
+	  $this->tableAtts = $table_prefix . "cartpauj_pm_attachments";
     }
-
+    
     function addToWPHead()
     {
-      ?>
-      <script language="JavaScript" type="text/javascript" src="<?php echo $this->jsURL; ?>script.js"></script>
-      <link rel="stylesheet" type="text/css" href="<?php echo $this->styleURL; ?>style.css" />
-      <?php
+      wp_enqueue_style('cartpaujpm-css', $this->styleURL.'style-'.$this->adminOps['skin'].'.css');
+      
+      $l10n = array('confirm_multi_delete' => __('Are you sure you want to delete these messages?', 'cartpaujpm'),
+                    'ajaxurl' =>  admin_url('admin-ajax.php'),
+                    'nothing_to_delete' => __('Nothing was selected for deletion.', 'cartpaujpm'));
+      wp_enqueue_script('cartpaujpm-js', $this->jsURL.'script.js', array('jquery'));
+      wp_localize_script('cartpaujpm-js', 'CPML10N', $l10n);
     }
-
+    
     function getPageID()
     {
       global $wpdb;
@@ -130,6 +165,22 @@ if (!class_exists("cartpaujPM"))
         $delim = "&";
       $this->pageURL = get_permalink($this->getPageID());
       $this->actionURL = $this->pageURL.$delim."pmaction=";
+    }
+    
+    function multiDelete()
+    {
+      if(!empty($_POST['ids']))
+      {
+        foreach($_POST['ids'] as $id)
+        {
+          $_GET['id'] = $id;
+          $this->dispDelMsg();
+        }
+        
+        die("Success");
+      }
+      
+      die("Nothing to delete");
     }
 /******************************************SETUP END******************************************/
 
@@ -151,9 +202,18 @@ if (!class_exists("cartpaujPM"))
           <thead>
           <tr><th width='50%'>".__("Setting", "cartpaujpm")."</th><th width='50%'>".__("Value", "cartpaujpm")."</th></tr>
           </thead>
+          <tr><td>".__("Skin Style", "cartpaujpm")."</td><td><select name='skin'><option value='default' ".(($viewAdminOps['skin'] == 'default')?"selected='selected'":'').">".__('Default', 'cartpaujpm')."</option><option value='dark' ".(($viewAdminOps['skin'] == 'dark')?"selected='selected'":'').">".__('Dark Sites', 'cartpaujpm')."</option></select></td></tr>
           <tr><td>".__("Max messages a user can keep in box? (0 = Unlimited)", "cartpaujpm")."<br /><small>".__("Admins always have Unlimited", "cartpaujpm")."</small></td><td><input type='text' size='10' name='num_messages' value='".$viewAdminOps['num_messages']."' /> ".__("Default","cartpaujpm").": 50</td></tr>
-          <tr><td>".__("Messages to show per page", "cartpaujpm")."<br/><small>".__("Do not set this to 0!", "cartpaujpm")."</small></td><td><input type='text' size='10' name='messages_page' value='".$viewAdminOps['messages_page']."' /> ".__("Default","cartpaujpm").": 15</td></tr>
-          <tr><td colspan='2'><input type='checkbox' name='hide_branding' ".checked(($viewAdminOps['hide_branding'] || $viewAdminOps['hide_branding'] == 'on'))." /> ".__("Hide \"Cartpauj PM\" Branding Footer", "cartpaujpm")."</td></tr>
+          <tr><td>".__("Messages to show per page", "cartpaujpm")."<br/><small>".__("Do not set this to 0!", "cartpaujpm")."</small></td><td><input type='text' size='10' name='messages_page' value='".$viewAdminOps['messages_page']."' /> ".__("Default","cartpaujpm").": 15</td></tr>" .
+          // Support for specifying the messaging administrator.
+          "<tr><td>" . __("Login name of administrative user", "cartpaujpm") .
+          "<br/><small>" . __("If set, only this user may list users or send messages to non-admin users", "cartpaujpm") .
+          "</small></td><td><input type='text' size='10' name='admin_user_login' value='" .
+          $viewAdminOps['admin_user_login'] . "' /> " . __("Default","cartpaujpm") . ": Empty</td></tr>" .
+          //
+          "<tr><td colspan='2'><input type='checkbox' name='hide_branding' " .
+          checked(!empty($viewAdminOps['hide_branding']), true, false) .
+          " /> " . __("Hide \"Cartpauj PM\" Branding Footer", "cartpaujpm") . "</td></tr>
           <tr><td colspan='2'><span><input class='button' type='submit' name='pm-admin-save' value='".__("Save Options", "cartpaujpm")."' /></span></td></tr>
           </table>
           </form>
@@ -171,9 +231,12 @@ if (!class_exists("cartpaujPM"))
       {
         $saveAdminOps = array('num_messages' 	=> $_POST['num_messages'],
                               'messages_page' => $_POST['messages_page'],
-                              'hide_branding' => $_POST['hide_branding']
+							  'admin_user_login' => $_POST['admin_user_login'],
+                              'hide_branding' => $_POST['hide_branding'],
+                              'skin'          => $_POST['skin']
         );
         update_option($this->adminOpsName, $saveAdminOps);
+        $this->adminOps = $saveAdminOps;
         return true;
       }
       return false;
@@ -181,9 +244,11 @@ if (!class_exists("cartpaujPM"))
 
     function getAdminOps()
     {
-      $pmAdminOps = array('num_messages' => 50,
+      $pmAdminOps = array('num_messages'  => 50,
                           'messages_page' => 15,
-                          'hide_branding' => false
+						  'admin_user_login' => '',
+                          'hide_branding' => false,
+                          'skin'          => 'default'
       );
 
       //Get old values if they exist
@@ -205,9 +270,9 @@ if (!class_exists("cartpaujPM"))
     {
       global $user_ID;
       if ($this->pmUserSave())
-        $this->notify = __("Your settings have been saved!", "cartpaujpm");
+        $this->notify = "<div class='pm-messageBox success icon' ><span>".__("Your settings have been saved!", "cartpaujpm")."</span></div>";;
       $viewUserOps = $this->getUserOps($user_ID); //Get current options
-      $prefs = "<p><strong>".__("Set your preferences below", "cartpaujpm").":</strong></p>
+      $prefs = "<p><strong class='icon-settings'>".__("Set your preferences below", "cartpaujpm").":</strong></p>
       <form id='pm-user-save-form' name='pm-user-save-form' method='post' action=''>
       <input type='checkbox' name='allow_messages' value='true'";
       if($viewUserOps['allow_messages'] == 'true')
@@ -260,23 +325,29 @@ if (!class_exists("cartpaujPM"))
     function dispNewMsg()
     {
       global $user_ID;
-      $users = $this->get_users();
-      $to = $_GET['to'];
-      if (!$to)
-        $to = 0;
 
       $adminOps = $this->getAdminOps();
       if (!$this->isBoxFull($user_ID, $adminOps['num_messages'], '1'))
       {
-        $newMsg = "<p><strong>".__("Create New Message", "cartpaujpm").":</strong></p>";
-        $newMsg .= "<form name='message' action='".$this->actionURL."checkmessage' method='post'>".
-        __("To", "cartpaujpm").":<br/>".
-        "<input type='text' id='search-q' onkeyup='javascript:autosuggest(\"".$this->actionURL."\")' name='message_to' autocomplete='off' value='".$this->convertToUser($to)."' /><br/>
-        <div id='results'></div>".
-        __("Subject", "cartpaujpm").":<br/>
+        $newMsg = "<p><strong>".__("Create New Message", "cartpaujpm").":</strong></p>";$newMsg .= "<form name='message' action='{$this->actionURL}checkmessage' method='post' enctype='multipart/form-data'>";
+
+        // Disallow recipient field if there is a messaging administrator and this person is not it.
+        if (!$this->admin_user_id || $this->admin_user_id == $user_ID) {
+          $to = $_GET['to'];
+          if (!$to) $to = 0;
+          $newMsg .= __("To", "cartpaujpm") . ":<br/>" .
+          "<input type='text' id='search-q' onkeyup='javascript:autosuggest(\"" .
+          $this->actionURL . "\")' name='message_to' autocomplete='off' value='" .
+          $this->convertToUser($to) . "' /><br/>";
+        }
+
+        $newMsg .= "<div id='results'></div>";
+        $newMsg .= __("Subject", "cartpaujpm").":<br/>
         <input type='text' name='message_title' maxlength='65' value='' /><br/>".
-        __("Message", "cartpaujpm").":<br/>".$this->get_form_buttons()."<br/>
+        __("Message", "cartpaujpm").":<br/>".$this->get_form_buttons()." ". $this->form_smilies() ."
         <textarea name='message_content'></textarea>
+        <input type='hidden' name='MAX_FILE_SIZE' value='64000000' />
+        <input type='file' name='attachment[]' multiple='multiple' /><br />
         <input type='hidden' name='message_from' value='".$user_ID."' />
         <input type='hidden' name='message_date' value='".current_time('mysql', $gmt = 1)."' />
         <input type='hidden' name='parent_id' value='0' /><br/>
@@ -287,9 +358,8 @@ if (!class_exists("cartpaujPM"))
       }
       else
       {
-        $error = "<p><strong>".__("Message Error", "cartpaujpm").":</strong></p>
-        <p><strong><a href='".$this->pageURL."' style='color:navy;'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
-        $this->notify = __("You cannot send messages because your message box is full!", "cartpaujpm");
+        $error = "<p><strong><a href='".$this->pageURL."'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
+        $this->notify = "<div class='pm-messageBox error icon' ><span>".__("You cannot send messages because your message box is full!", "cartpaujpm")."</span></div>";
         return $error;
       }
     }
@@ -303,9 +373,9 @@ if (!class_exists("cartpaujPM"))
       $pID = $_GET['id'];
       $wholeThread = $this->getWholeThread($pID);
 
-      $threadOut = "<p><strong>".__("Message Thread", "cartpaujpm").":</strong></p>
-      <table><tr><th width='15%'>".__("Sender", "cartpaujpm")."</th><th width='85%'>".__("Message", "cartpaujpm")."</th></tr>";
-
+     
+     
+      $threadOut = "<div id='MessageContainers'>";
       foreach ($wholeThread as $post)
       {
         //Check for privacy errors first
@@ -331,26 +401,67 @@ if (!class_exists("cartpaujPM"))
         }
 
         $uData = get_userdata($post->from_user);
-        $threadOut .= "<tr><td>".$uData->user_login."<br/><small>".$this->formatDate($post->date)."</small><br/>".get_avatar($post->from_user, 60)."</td>";
+		$threadOut .= "<div class='message-box item-container'>";
+        $threadOut .= "<div class='message-metadata envelope-info'><span class=' message-date'>".$this->formatDate($post->date)."</span><div class='message-sender'>";
+		 
+	//START AVATAR LINKS MINGLE FORUM message box
+		if(!function_exists('is_plugin_active'))
+			require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+		if(is_plugin_active('mingle-forum/wpf-main.php'))
+		{
+		
+       $threadOut .= " <a  title='".$uData->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$uData->ID."' > ".get_avatar($post->from_user, 30)." </a>
+	  <a  title='".$uData->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$uData->ID."' > <strong> ".$uData->user_login."</strong></a>";
+		}
+		
+		else
+		{
+	   $threadOut .= " <a  title='".$uData->user_login." ' href='". home_url()."/author/".$uData->user_login."' > ".get_avatar($post->from_user, 30)." </a> 
+			 <a  title='".$uData->user_login." ' href='". home_url()."/author/".$uData->user_login."' ><strong> ".$uData->user_login."</strong></a>";
+		}             
+    //END  AVATAR LINKS MINGLE FORUM message box
+		 
+		 
+		 $threadOut .= " </div></div>";
 
         if ($post->parent_id == 0) //If it is the parent message
         {
-          $threadOut .= "<td class='pmtext'><strong>".__("Subject", "cartpaujpm").": </strong>".$this->output_filter($post->message_title)."<hr/>".apply_filters("comment_text", $this->autoembed($this->output_filter($post->message_contents)))."</td></tr>";
+          $threadOut .= "<div class='message-content'><strong>" . __("Subject", "cartpaujpm") . ": </strong>" .
+            $this->output_filter($post->message_title) . "</div></div>";
+		  
         }
         else
         {
-          $threadOut .= "<td class='pmtext'>".apply_filters("comment_text", $this->autoembed($this->output_filter($post->message_contents)))."</td></tr>";
+          $threadOut .= "<div class='message-content'>";
         }
+        $threadOut .= apply_filters("comment_text", $this->autoembed($this->output_filter($post->message_contents)));
+        // Write any attachment links.
+        $attres = $wpdb->get_results($wpdb->prepare("SELECT id, filename FROM " .
+          "{$this->tableAtts} WHERE message_id = %d ORDER BY id", $post->id));
+        if (!empty($attres)) {
+          $threadOut .= "<hr /><strong>" . __("Attached", "cartpaujpm") . ":</strong>";
+          foreach ($attres as $attrow) {
+            $attid = $attrow->id;
+            $threadOut .= " <a href='{$this->pluginURL}download.php?id=$attid'>" .
+              htmlspecialchars($attrow->filename) . "</a>";
+		
+		 }
+        }
+        $threadOut .= "</div></div>";
       }
 
       //SHOW THE REPLY FORM
-      $threadOut .= "</table>
-      <p><strong>".__("Add Reply", "cartpaujpm").":</strong></p>
-      <form name='message' action='".$this->actionURL."checkmessage' method='post'>".
-      $this->get_form_buttons()."<br/>
+	  $threadOut .= "</div>
+      <p><strong>".__("Add Reply", "cartpaujpm")." :</strong></p>
+      <form name='message' action='{$this->actionURL}checkmessage' method='post' enctype='multipart/form-data'>" .
+      $this->get_form_buttons() . " " .$this->form_smilies() ." 
       <textarea name='message_content'></textarea>
+	  <input type='hidden' name='MAX_FILE_SIZE' value='64000000' />
+      <input type='file' name='attachment[]' multiple='multiple' /><br />
       <input type='hidden' name='message_to' value='".$this->convertToUser($to)."' />
-      <input type='hidden' name='message_title' value='".$re.$message_title."' />
+	  
+      <input type='hidden' name='message_title'  value='".$re.$message_title."' />
+	  
       <input type='hidden' name='message_from' value='".$user_ID."' />
       <input type='hidden' name='message_date' value='".current_time('mysql', $gmt = 1)."' />
       <input type='hidden' name='parent_id' value='".$pID."' /><br/>
@@ -382,16 +493,24 @@ if (!class_exists("cartpaujPM"))
     function dispCheckMsg()
     {
       global $wpdb, $user_ID;
+	   $adminOps = $this->getAdminOps();
+
+      // Allow send to any user only for the messaging administrator, if there is one.
+      if ($this->admin_user_id && $this->admin_user_id != $user_ID) {
+        $to = $this->admin_user_id;
+      }
+      else {
+        $to = $this->convertToID($_POST['message_to']);
+      }
       $from = $_POST['message_from'];
-      $preTo = $_POST['message_to'];
-      $to = $this->convertToID($preTo);
+
       $myReplaceSub = array("'", "\\");//Make sure we get ' and \ out of the message title
       $title = str_replace($myReplaceSub, "", $this->input_filter($_POST['message_title']));
       $content = $this->input_filter($_POST['message_content']);
       $parentID = $_POST['parent_id'];
       $date = $_POST['message_date'];
       
-      $adminOps = $this->getAdminOps();
+
       if ($to)
         $toUserOps = $this->getUserOps($to);
 
@@ -399,30 +518,27 @@ if (!class_exists("cartpaujPM"))
       if (!$to || !$title || !$content || ($from != $user_ID))
       {
         if (!$to)
-          $theError = __("You must enter a valid recipient!", "cartpaujpm");
+          $theError = "<div class='pm-messageBox alert icon' ><span>".__("You must enter a valid recipient!", "cartpaujpm")."</span></div>";
         if (!$title)
-          $theError = __("You must enter a valid subject!", "cartpaujpm");
+          $theError ="<div class='pm-messageBox alert icon' ><span>".__("You must enter a valid subject!", "cartpaujpm")."</span></div>";
         if (!$content)
-          $theError = __("You must enter some message content!", "cartpaujpm");
+          $theError = "<div class='pm-messageBox alert icon' ><span>".__("You must enter some message content!", "cartpaujpm")."</span></div>";
         if ($from != $user_ID)
-          $theError = __("You do not have permission to send this message!", "cartpaujpm");
-        $error = "<p><strong>".__("Message Error", "cartpaujpm").":</strong></p>
-        <p><strong><a href='".$this->pageURL."' style='color:navy;'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
+          $theError ="<div class='pm-messageBox alert icon' ><span>".__("You do not have permission to send this message!", "cartpaujpm")."</span></div>";
+        $error = "<p><strong><a href='".$this->pageURL."'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
         $this->notify = $theError;
         return $error;
       }
       if ($toUserOps['allow_messages'] != 'true')
       {
-        $error = "<p><strong>".__("Message Error", "cartpaujpm").":</strong></p>
-        <p><strong><a href='".$this->pageURL."' style='color:navy;'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
-        $this->notify = __("This user does not want to receive messages!", "cartpaujpm");
+        $error = "<p><strong><a href='".$this->pageURL."'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
+        $this->notify = "<div class='pm-messageBox note icon' ><span>".__("This user does not want to receive messages!", "cartpaujpm")."</span></div>";
         return $error;
       }
       if ($this->isBoxFull($to, $adminOps['num_messages'], $parentID))
       {
-        $error = "<p><strong>".__("Message Error", "cartpaujpm").":</strong></p>
-        <p><strong><a href='".$this->pageURL."' style='color:navy;'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
-        $this->notify = __("The Recipients Message Box Is Full!", "cartpaujpm");
+        $error = "<p><strong><a href='".$this->pageURL."'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
+        $this->notify = "<div class='pm-messageBox error icon' ><span>".__("The Recipients Message Box Is Full!", "cartpaujpm")."</span></div>";
         return $error;
       }
 
@@ -439,10 +555,40 @@ if (!class_exists("cartpaujPM"))
         $wpdb->query($wpdb->prepare("UPDATE {$this->tableMsgs} SET to_del = 0 WHERE id = %d", $parentID));
         $wpdb->query($wpdb->prepare("UPDATE {$this->tableMsgs} SET from_del = 0 WHERE id = %d", $parentID));
       }
-
+ // Store any attachments. Need the new message ID for this.
+      $message_id = $wpdb->insert_id;
+      if ($message_id === false) die("Internal error: {$this->tableMsgs} insert failed.");
+      if (!empty($_FILES['attachment']['name'])) {
+        foreach ($_FILES['attachment']['name'] as $key => $filename) {
+          if ('' === $filename || 0 == $_FILES['attachment']['size'][$key]) continue;
+          $filepath = $_FILES['attachment']['tmp_name'][$key];
+          // Get the mime type while we still have a file.
+          $mimetype = 'application/octet-stream';
+          if (function_exists('finfo_open')) {
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            $mimetype = finfo_file($finfo, $filepath);
+            finfo_close($finfo);
+          }
+          else {
+            $mimetype = mime_content_type($filepath);
+          }
+          // Get file contents.
+          $tmpfile = fopen($filepath, "r");
+          $contents = fread($tmpfile, $_FILES['attachment']['size'][$key]);
+          fclose($tmpfile);
+          // Insert the row.
+          $tmp = $wpdb->insert($this->tableAtts, array(
+            'message_id' => $message_id,
+            'filename'   => $filename,
+            'mimetype'   => $mimetype,
+            'contents'   => $contents,
+          ), array('%d', '%s', '%s', '%s'));
+          if ($tmp === false) die("Internal error: {$this->tableAtts} insert failed.");
+        }
+      }
       $check = "<p><strong>".__("Message Sent", "cartpaujpm").":</strong></p>
-      <p><strong><a href='".$this->pageURL."' style='color:navy;'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
-      $this->notify = __("Your message was successfully sent!", "cartpaujpm");
+      <p><strong><a href='".$this->pageURL."'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
+      $this->notify = "<div class='pm-messageBox success icon' ><span>".__("Your message was successfully sent!", "cartpaujpm")."</span></div>";
 
       $this->sendEmail($to, $from);
 
@@ -503,49 +649,128 @@ if (!class_exists("cartpaujPM"))
       $numMsgs = $this->getUserNumMsgs();
       if ($numMsgs)
       {
-        $msgsOut = "<p><strong>".__("Your Messages", "cartpaujpm").":</strong></p>";
+        
         $numPgs = $numMsgs / $adminOps['messages_page'];
         if ($numPgs > 1)
         {
-          $msgsOut .= "<p><strong>".__("Page", "cartpaujpm").": </strong> ";
+          $msgsOut .= "<p><span class='pm-pages '> <strong>".__("Page", "cartpaujpm").": </strong> ";
           for ($i = 0; $i < $numPgs; $i++)
             if ($_GET['pmpage'] != $i)
               $msgsOut .= "<a href='".$this->actionURL."messagebox&pmpage=".$i."'>".($i+1)."</a> ";
             else
-              $msgsOut .= "[<b>".($i+1)."</b>] ";
-          $msgsOut .= "</p>";
+              $msgsOut .= "<b>".($i+1)."</b> ";
+          $msgsOut .= "</p></span>";
         }
 
-        $msgsOut .= "<table><tr>
-        <th width='20%'>".__("Started By", "cartpaujpm")."</th>
-        <th width='50%'>".__("To: Subject", "cartpaujpm")."</th>
-        <th width='20%'>".__("Last Reply By", "cartpaujpm")."</th>
-        <th width='10%'>".__("Delete", "cartpaujpm")."</th></tr>";
+        $msgsOut .= "<table id='message-threads' ><tr class='top'>
+		<th width='1%' class='thread-select'></th>
+        <th width='27%'>".__("Started By", "cartpaujpm")."</th>
+        <th width='53%'>".__("To: Subject", "cartpaujpm")."</th>
+        <th width='23%'>".__("Last Reply By", "cartpaujpm")."</th>
+		<th width='1%'></th>";
+
         $msgs = $this->getMsgs();
         foreach ($msgs as $msg)
         {
           if ($msg->message_read == 0 && $msg->last_sender != $user_ID)
-            $read = "<font color='#FF0000'>".__("Unread", "cartpaujpm")."</font>";
+            $read = "unread";
           else
-            $read = __("Read", "cartpaujpm");
+            $read = "read";
           $uSend = get_userdata($msg->from_user);
           $uLast = get_userdata($msg->last_sender);
           $toUser = get_userdata($msg->to_user);
-          $msgsOut .= "<tr><td>".$uSend->user_login."<br/><small>".$this->formatDate($msg->date)."</small></td>
-          <td>".$toUser->user_login.": <a href='".$this->actionURL."viewmessage&id=".$msg->id."'>".$msg->message_title."</a><br/><small>".$read."</small></td>
-          <td>".$uLast->user_login."<br/><small>".$this->formatDate($msg->last_date)."</small></td>
-          <td><a href='".$this->actionURL."deletemessage&id=".$msg->id."' onclick='return confirm(\"".__('Are you sure?', 'cartpaujpm')."\");'>".__("Delete", "cartpaujpm")."</a></td>
+          $msgsOut .= "<tr id='m-".$msg->id."' class='".$read."'> 	
+		  <td class='thread-select'><input type='checkbox' name='message_ids' class='cpm_multi cpm_multi_".$read."' value='".$msg->id."' /></td><td class='user-send'>";
+    //START AVATAR LINKS MINGLE FORUM from Started By
+		if(!function_exists('is_plugin_active'))
+			require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+		if(is_plugin_active('mingle-forum/wpf-main.php'))
+		{
+		
+       $msgsOut .= " <a  title='".$uSend->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$uSend->ID."' > ".get_avatar($msg->from_user, 35)." </a>
+	  <a  title='".$uSend->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$uSend->ID."' > ".$uSend->user_login." </a>";
+		}
+		
+		else
+		{
+			  $msgsOut .= " <a  title='".$uSend->user_login." ' href='". home_url()."/author/".$uSend->user_login."' > ".get_avatar($msg->from_user, 35)." </a> 
+			 <a  title='".$uSend->user_login." ' href='". home_url()."/author/".$uSend->user_login."' > ".$uSend->user_login." </a>";
+		}             
+    //END  AVATAR LINKS MINGLE FORUM from Started By	
+	  
+		  $msgsOut .= "<br/> <small><span class='data-icon' >".$this->formatDate($msg->date)."</span></small></td><td class='to-user'> ";
+				  
+	//START AVATAR LINKS MINGLE FORUM from to User
+		if(!function_exists('is_plugin_active'))
+			require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+		if(is_plugin_active('mingle-forum/wpf-main.php'))
+		{
+		
+       $msgsOut .= " <a  title='".$toUser->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$toUser->ID."' > ".get_avatar($msg->to_user, 15)." </a>
+	  <a  title='".$toUser->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$toUser->ID."' > ".$toUser->user_login." </a>";
+		}
+		
+		else
+		{
+			  $msgsOut .= " <a  title='".$uSend->user_login." ' href='". home_url()."/author/".$toUser->user_login."' > ".get_avatar($msg->to_user, 15)." </a> 
+			 <a  title='".$uSend->user_login." ' href='". home_url()."/author/".$toUser->user_login."' > ".$toUser->user_login." </a>";
+		}             
+    //END  AVATAR LINKS MINGLE FORUM from to User 
+		 $msgsOut .= "<br/><span class='Subject-icon' ><a href='".$this->actionURL."viewmessage&id=".$msg->id."'>".$msg->message_title."</a></span></td>";
+		  
+         $msgsOut .= "<td class='last-sender' >";
+		 
+	//START AVATAR LINKS MINGLE FORUM from User Last
+		if(!function_exists('is_plugin_active'))
+			require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+		if(is_plugin_active('mingle-forum/wpf-main.php'))
+		{
+		
+       $msgsOut .= " <a  title='".$uLast->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$uLast->ID."' > ".get_avatar($msg->last_sender, 15)." </a>
+	  <a  title='".$uLast->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$uLast->ID."' > ".$uLast->user_login." </a>";
+		}
+		
+		else
+		{
+			  $msgsOut .= " <a  title='".$uLast->user_login." ' href='". home_url()."/author/".$uLast->user_login."' > ".get_avatar($msg->last_sender, 15)." </a> 
+			 <a  title='".$uLast->user_login." ' href='". home_url()."/author/".$uLast->user_login."' > ".$uLast->user_login." </a>";
+		}             
+    //END  AVATAR LINKS MINGLE FORUM from User Last 
+		 
+		  
+		 $msgsOut .= " <br/><small><span class='data-icon' >".$this->formatDate($msg->last_date)."</span></small></td>  
+		  <td><a title='".__("Delete", "cartpaujpm")."' class='delete' href='".$this->actionURL."deletemessage&id=".$msg->id."' onclick='return confirm(\"".__('Are you sure?', 'cartpaujpm')."\");'></a></td>
           </tr>";
+		 
         }
-        $msgsOut .= "</table>";
-
+		
+       $msgsOut .= "</table><div class='bottom'>
+		  ".__("Select", "cartpaujpm")." : <select name='message-type-select' id='message-type-select'>
+		  <option value='none'>".__("None", "cartpaujpm")."</option>
+		  <option value='read'>".__("Read", "cartpaujpm")."</option>
+		  <option value='unread'>".__("Unread", "cartpaujpm")."</option>
+		  <option value='all'>".__("All", "cartpaujpm")."</option>
+	      </select> 
+	      <a href='#' id='messages-delete'>".__('Delete Selected', 'cartpaujpm')."</a>
+        <img src='".admin_url('images/wpspin_light.gif')."' id='messages-delete-pending' />
+	      </div>";
+ $numPgs = $numMsgs / $adminOps['messages_page'];
+        if ($numPgs > 1)
+        {
+          $msgsOut .= "<p><span class='pm-pages '> <strong>".__("Page", "cartpaujpm").": </strong> ";
+          for ($i = 0; $i < $numPgs; $i++)
+            if ($_GET['pmpage'] != $i)
+              $msgsOut .= "<a href='".$this->actionURL."messagebox&pmpage=".$i."'>".($i+1)."</a> ";
+            else
+              $msgsOut .= "<b>".($i+1)."</b> ";
+          $msgsOut .= "</p></span>";
+        }
         return $msgsOut;
       }
       else
       {
-        $empty = "<p><strong>".__("No Messages", "cartpaujpm").":</strong></p>
-        <p><strong><a href='".$this->pageURL."' style='color:navy;'>".__("Refresh Message Box", "cartpaujpm")."</a></strong></p>";
-        $this->notify = __("Your message box is empty!", "cartpaujpm");
+        $empty = "<p><strong><a  class='icon-refresh' href='".$this->pageURL."'>".__("Refresh Message Box", "cartpaujpm")."</a></strong></p>";
+        $this->notify = "<div class='pm-messageBox note icon' ><span>".__("Your message box is empty!", "cartpaujpm")."</span></div>";
         return $empty;
       }
     }
@@ -575,25 +800,33 @@ if (!class_exists("cartpaujPM"))
       $toDuser = $wpdb->get_var($wpdb->prepare("SELECT to_user FROM {$this->tableMsgs} WHERE id = %d", $delID));
       $toDel = $wpdb->get_var($wpdb->prepare("SELECT to_del FROM {$this->tableMsgs} WHERE id = %d", $delID));
       $fromDel = $wpdb->get_var($wpdb->prepare("SELECT from_del FROM {$this->tableMsgs} WHERE id = %d", $delID));
+	  $sqlAttr = "DELETE FROM a USING {$this->tableMsgs} AS m JOIN {$this->tableAtts} AS a " .
+        "WHERE (m.id = %d OR m.parent_id = %d) AND a.message_id = m.id";
 
       if ($toDuser == $user_ID)
       {
-        if ($fromDel == 0)
+          if ($fromDel == 0) {
           $wpdb->query($wpdb->prepare("UPDATE {$this->tableMsgs} SET to_del = 1 WHERE id = %d", $delID));
-        else
+       }
+        else {
+          $wpdb->query($wpdb->prepare($sqlAttr, $delID, $delID));
+          $wpdb->query($wpdb->prepare("DELETE FROM {$this->tableMsgs} WHERE id = %d OR parent_id = %d", $delID, $delID));
+        }
           $wpdb->query($wpdb->prepare("DELETE FROM {$this->tableMsgs} WHERE id = %d OR parent_id = %d", $delID, $delID));
       }
       else
       {
-        if ($toDel == 0)
+        if ($toDel == 0) {
           $wpdb->query($wpdb->prepare("UPDATE {$this->tableMsgs} SET from_del = 1 WHERE id = %d", $delID));
-        else
+        }
+        else {
+          $wpdb->query($wpdb->prepare($sqlAttr, $delID, $delID));
           $wpdb->query($wpdb->prepare("DELETE FROM {$this->tableMsgs} WHERE id = %d OR parent_id = %d", $delID, $delID));
+        }
       }
 
-      $deleted = "<p><strong>".__("Message Deleted", "cartpaujpm").":</strong></p>
-      <p><strong><a href='".$this->pageURL."' style='color:navy;'>".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
-      $this->notify = __("Your message was successfully deleted!", "cartpaujpm");
+      $deleted = "<p><strong><a href='".$this->pageURL."' >".__("Back To Message Box", "cartpaujpm")."</a></strong></p>";
+      $this->notify = "<div class='pm-messageBox success icon' ><span>".__("Your message was successfully deleted!", "cartpaujpm")."</span></div>";
 
       return $deleted;
     }
@@ -613,49 +846,47 @@ if (!class_exists("cartpaujPM"))
 
       if ($this->addAnnouncement()) //Adding a new announcement?
       {
-        $announce = "<p><strong>".__("Announcement Added", "cartpaujpm").":</strong></p>
-        <p><strong><a href='".$this->actionURL."viewannouncements' style='color:navy;'>".__("Back To Announcements", "cartpaujpm")."</a></strong></p>";
-        $this->notify = __("The announcement was successfully added!", "cartpaujpm");
+        $announce = "<p><strong><a href='".$this->actionURL."viewannouncements'>".__("Back To Announcements", "cartpaujpm")."</a></strong></p>";
+        $this->notify = "<div class='pm-messageBox success icon' ><span>".__("The announcement was successfully added!", "cartpaujpm")."</span></div>";
         return $announce;
       }
 
       if ($this->deleteAnnouncement()) //Deleting an announcement?
       {
-        $announce = "<p><strong>".__("Announcement Deleted", "cartpaujpm").":</strong></p>
-        <p><strong><a href='".$this->actionURL."viewannouncements' style='color:navy;'>".__("Back To Announcements", "cartpaujpm")."</a></strong></p>";
-        $this->notify = __("The announcement was successfully deleted!", "cartpaujpm");
+        $announce = "<p><strong><a href='".$this->actionURL."viewannouncements'>".__("Back To Announcements", "cartpaujpm")."</a></strong></p>";
+        $this->notify = "<div class='pm-messageBox success icon' ><span>".__("The announcement was successfully deleted!", "cartpaujpm")."</span></div>";
         return $announce;
       }
 
       if (!$num) //Just viewing announcements
       {
-        $announce = "<p><strong>".__("Announcements", "cartpaujpm").":</strong></p>";
+       
         if (current_user_can('level_9'))
         {
           $announce .= $this->dispAnnounceForm();
         }
-        $this->notify = __("There are no announcements!", "cartpaujpm");
+        $this->notify = "<div class='pm-messageBox note icon' ><span>".__("There are no announcements!", "cartpaujpm")."</span></div>";
       }
       else
       {
-        $announce = "<p><strong>".__("Announcements", "cartpaujpm").":</strong></p>";
+       
         if (current_user_can('level_9'))
         {
           $announce .= $this->dispAnnounceForm();
         }
-        $announce .= "<table>";
+        $announce .= "<div id='MessageContainers'>";
         $a = 0;
         foreach ($announcements as $announcement)
         {
-          $announce .= "<tr class='trodd".$a."'><td class='pmtext'><strong>".__("Subject", "cartpaujpm").":</strong> ".$this->output_filter($announcement->message_title).
-          "<br/><strong>".__("Date", "cartpaujpm").":</strong> ".$this->formatDate($announcement->date);
-          if (current_user_can('level_9'))
-            $announce .= "<br/><a href='".$this->actionURL."viewannouncements&del=1&id=".$announcement->id."'>".__("Delete", "cartpaujpm")."</a>";
-          $announce .= "<hr/>";
-          $announce .= "<strong>".__("Message", "cartpaujpm").":</strong><br/>".apply_filters("comment_text", $this->output_filter($announcement->message_contents))."</td></tr>";
+          $announce .= "<div class='message-box item-container trodd".$a."'><div class='message-metadata envelope-info'>
+		  <strong class='icon-viewannouncements' > ".$this->output_filter($announcement->message_title)." </strong>
+		  <span class=' message-date'>".$this->formatDate($announcement->date)."</span></div>";
+          if (current_user_can('level_9'))	
+		  $announce .= "<a class='announcement' href='".$this->actionURL."viewannouncements&del=1&id=".$announcement->id."'></a>";
+          $announce .= "<div class='message-content'>".apply_filters("comment_text", $this->output_filter($announcement->message_contents))."</div></div>";
           if ($a) $a = 0; else $a = 1; //Alternate table colors
         }
-        $announce .= "</table>";
+        $announce .= "</div>";
       }
 
       return $announce;
@@ -666,8 +897,7 @@ if (!class_exists("cartpaujPM"))
       $form = "<p>".__("Add a new announcement below", "cartpaujpm")."</p>
       <form name='message' action='' method='post'>
       ".__("Subject", "cartpaujpm").":<br/>
-      <input type='text' name='message_title' value='' /><br/>".
-      $this->get_form_buttons()."<br/>
+      <input type='text' name='message_title' value='' /><br/>".$this->get_form_buttons()." ".$this->form_smilies() ."
       <textarea name='message_content'></textarea>
       <input type='hidden' name='message_date' value='".current_time('mysql', $gmt = 1)."' /><br/>
       <input type='submit' onClick='this.disabled=true;this.form.submit();' name='add-announcement' value='".__("Submit", "cartpaujpm")."' />
@@ -713,13 +943,18 @@ if (!class_exists("cartpaujPM"))
       if (current_user_can('level_9') && $_GET['del']) //Make sure only admins can delete announcements
       {
         $wpdb->query($wpdb->prepare("DELETE FROM {$this->tableMsgs} WHERE id = %d", $delID));
+		$wpdb->query($wpdb->prepare("DELETE FROM {$this->tableAtts} WHERE message_id = %d", $delID));
         return true;
       }
       return false;
     }
 /******************************************VIEW ANNOUNCEMENTS END******************************************/
 
-/******************************************MAIN DISPLAY BEGIN******************************************/
+/******************************************MAIN DISPLAY BEGIN******************************************/ 
+ 
+	 
+
+
     function dispHeader()
     {
       global $user_ID, $user_login;
@@ -731,29 +966,51 @@ if (!class_exists("cartpaujPM"))
       if ($adminOps['num_messages'] == 0 || current_user_can('level_9'))
         $msgBoxTotal = __("Unlimited", "cartpaujpm");
       else
-        $msgBoxTotal = $adminOps['num_messages'];
-
+        $msgBoxTotal = $adminOps['num_messages']; 
       $header = "<div id='pm-wrapper'>";
       $header .= "<div id='pm-header'>";
-      $header .= get_avatar($user_ID, 60)."<p><strong>".__("Welcome", "cartpaujpm").": ".$user_login."</strong><br/>";
-      $header .= __("You have", "cartpaujpm")." (<font color='red'>".$numNew."</font>) ".__("new messages", "cartpaujpm").
-      " ".__("and", "cartpaujpm")." (".$numAnn.") ".__("announcement(s)", "cartpaujpm")."<br/>";
+      $header .= get_avatar($user_ID, 30)."<p><a class='icon-settings pm-settings' href='".$this->actionURL."settings'>".__("Settings", "cartpaujpm")."</a><strong>".__("Welcome", "cartpaujpm").": ".$user_login."</strong><br/>";
+ 
+	 
       if ($msgBoxTotal == __("Unlimited", "cartpaujpm") || $msgBoxSize < $msgBoxTotal)
         $header .= __("Message box size", "cartpaujpm").": ".$msgBoxSize." ".__("of", "cartpaujpm")." ".$msgBoxTotal."</p>";
       else
-        $header .= "<font color='red'>".__("Your Message Box Is Full!", "cartpaujpm")."</font></p>";
+        $header .= "<font class='icon-warning' color='red'>".__("Your Message Box Is Full!", "cartpaujpm")."</font></p>";  
       $header .= "</div>";
       return $header;
     }
 
     function dispMenu()
     {
+	  global $user_ID;
+      $adminOps = $this->getAdminOps();
+	  
       $menu = "<div id='pm-menu'>";
-      $menu .= "<a href='".$this->pageURL."'>".__("Message Box", "cartpaujpm")."</a> | ";
-      $menu .= "<a href='".$this->actionURL."viewannouncements'>".__("Announcements", "cartpaujpm")."</a> | ";
-      $menu .= "<a href='".$this->actionURL."newmessage'>".__("New Message", "cartpaujpm")."</a> | ";
-      $menu .= "<a href='".$this->actionURL."directory'>".__("Directory", "cartpaujpm")."</a> | ";
-      $menu .= "<a href='".$this->actionURL."settings'>".__("Settings", "cartpaujpm")."</a>";
+	   global $user_ID, $user_login;
+
+      $numNew = $this->getNewMsgs();
+      $numAnn = $this->getAnnouncementsNum();
+      $msgBoxSize = $this->getUserNumMsgs();
+      $adminOps = $this->getAdminOps();
+      if ($adminOps['num_messages'] == 0 || current_user_can('level_9'))
+        $msgBoxTotal = __("Unlimited", "cartpaujpm");
+      else
+        $msgBoxTotal = $adminOps['num_messages'];
+	  //Insert Mingle Forum B
+      if(!function_exists('is_plugin_active'))
+      require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+      if(is_plugin_active('mingle-forum/wpf-main.php') )
+      {	
+      $menu .= "<a class='icon-forum-home' href='". home_url()."/forum' >".__("Forum Home", "cartpaujpm")."</a>";
+        }
+       //END Mod DDart
+      $menu .= "<a title='".__("You have", "cartpaujpm")." (".$numNew.") ".__("new messages", "cartpaujpm")."' class='icon-message-box' href='".$this->pageURL."'>".__("Message Box", "cartpaujpm")." <span>".$numNew."</span> </a>";
+      $menu .= "<a class='icon-newmessage'href='".$this->actionURL."newmessage'>".__("New Message", "cartpaujpm")."</a>";
+	  $menu .= "<a title='". __("There are", "cartpaujpm")." (".$numAnn.") ".__("announcement(s)", "cartpaujpm")."' class='icon-viewannouncements' href='".$this->actionURL."viewannouncements'>".__("Announcements", "cartpaujpm")."<span>".$numAnn."</span></a>";
+ // Disallow directory if there is a messaging administrator and this person is not it.
+ if (!$this->admin_user_id || $this->admin_user_id == $user_ID) {
+      $menu .= "<a class='icon-directory' href='" . $this->actionURL . "directory'>".__("Directory", "cartpaujpm")."</a>";
+	  }
       $menu .= "</div>";
       $menu .= "<div id='pm-content'>";
       return $menu;
@@ -773,7 +1030,7 @@ if (!class_exists("cartpaujPM"))
           $footer .= $this->dispNotify();
       
       if($this->adminOps['hide_branding'] != 'on')
-        $footer .= "<div id='pm-footer'><a href='http://cartpauj.icomnow.com'>Cartpauj PM ".$this->get_version()."</a></div>";
+        $footer .= "<div id='pm-footer'><img style='box-shadow: none !important; -webkit-box-shadow:!important;  -moz-box-shadow: !important; margin: 0 3px -3px 0;' alt='' align='top' src='" . $this->pluginURL . "images/logo.png' /><a href='http://cartpauj.icomnow.com''>Cartpauj PM ".$this->get_version()."</a></div>";
       
       $footer .= "</div>"; //End main wrapper
       
@@ -782,13 +1039,41 @@ if (!class_exists("cartpaujPM"))
 
     function dispDirectory()
     {
+	 global $user_ID;
+
+      // Disallow directory if there is a messaging administrator and this person is not it.
+      if ($this->admin_user_id && $this->admin_user_id != $user_ID) {
+        return '';
+      }
       $users = $this->get_users();
       $directory = "";
-
+       $directory .= '<dir class="directory">';
       foreach($users as $u)
       {
-        $directory .= '<p><strong>'.$u->user_login.'</strong> - <a href="'.$this->actionURL.'newmessage&to='.$u->ID.'">'.__('Send Message', 'cartpaujpm').'</a></p>';
+	        $directory .= '<p><span>';
+		
+    //START AVATAR LINKS MINGLE FORUM
+		if(!function_exists('is_plugin_active'))
+			require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+		if(is_plugin_active('mingle-forum/wpf-main.php'))
+		{
+		
+      $directory .= " <a  title='".$u->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$u->ID."' > ".get_avatar($u->ID, 35)." </a>
+	  <strong><a  title='".$u->user_login." ' href='". home_url()."/forum?mingleforumaction=profile&id=".$u->ID."' > ".$u->user_login." </a></strong>";
+		}
+		
+		else
+		{
+			 $directory .= " <a  title='".$u->user_login." ' href='". home_url()."/author/".$u->user_login."' > ".get_avatar($u->ID, 35)." </a> 
+			 <strong><a  title='".$u->user_login." ' href='". home_url()."/author/".$u->user_login."' > ".$u->user_login." </a></strong>";
+		}
+              
+
+    //END  AVATAR LINKS MINGLE FORUM 	
+	
+		$directory .= '  <a class="directory_message" href="'.$this->actionURL.'newmessage&to='.$u->ID.'">'.__('Send Message', 'cartpaujpm').'</a><span></p>';	
       }
+	  $directory .= '</dir>';
       return $directory;
     }
 
@@ -842,7 +1127,21 @@ if (!class_exists("cartpaujPM"))
       }
       else
       {
-        $out = "<p><strong>".__("You must be logged-in to view this page.", "cartpaujpm")."</strong></p>";
+		$out =  "<div class='pm-login'>
+                <div class='pm-messageBox info icon' ><span>".__("You must be logged-in to view this page.", "cartpaujpm")."</span></div>
+		        <form class='login-form' action='" . wp_login_url() . "' method='post'>
+                <span aria-hidden='true' class='icon-my-profile'></span>
+                <input onfocus='placeHolder(this)' onblur='placeHolder(this)' type='text' name='log' id='log' value='" . __("Username: ", "cartpaujpm") . "' size='15' class='wpf-input mf_uname' />
+
+                <span aria-hidden='true' class='icon-password'></span>
+                <input onfocus='placeHolder(this)' onblur='placeHolder(this)' type='password' name='pwd' id='pwd' size='15' value='*******' class='wpf-input mf_pwd' />
+
+                <input name='rememberme' id='rememberme' type='hidden' value='forever' />
+                <input type='hidden' name='redirect_to' value='" . $_SERVER['REQUEST_URI'] . "' />
+
+                <input type='submit' name='submit' value='" . __('Login', 'cartpaujpm') . "' id='wpf-login-button' class='button' />
+                " . __('or', 'cartpaujpm') . " <a href='{$this->options['forum_signup_url']}' id='or_register'>" . __('Register', 'cartpaujpm') . "</a>
+              </form></div>";
       }
       return $out;
     }
@@ -857,24 +1156,24 @@ if (!class_exists("cartpaujPM"))
 
     function get_form_buttons()
     {
-      $button = '
-      <a title="'.__("Bold", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[b]", "[/b]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/b.png" /></a>
-      <a title="'.__("Italic", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[i]", "[/i]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/i.png" /></a>
-      <a title="'.__("Underline", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[u]", "[/u]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/u.png" /></a>
-      <a title="'.__("Strikethrough", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[s]", "[/s]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/s.png" /></a>
-      <a title="'.__("Code", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[code]", "[/code]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/code.png" /></a>
-      <a title="'.__("Quote", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[quote]", "[/quote]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/quote.png" /></a>
-      <a title="'.__("List", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[list]", "[/list]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/list.png" /></a>
-      <a title="'.__("List item", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[*]", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/li.png" /></a>
-      <a title="'.__("Link", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[url]", "[/url]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/url.png" /></a>
-      <a title="'.__("Image", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[img]", "[/img]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/img.png" /></a>
-      <a title="'.__("Email", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[email]", "[/email]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/email.png" /></a>
-      <a title="'.__("Add Hex Color", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[color=#]", "[/color]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/color.png" /></a>
-            <a title="'.__("Embed", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[embed]", "[/embed]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/embed.png" /></a>';
+    $button = '<div class="forum_buttons"><a title="'.__("Bold", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[b]", "[/b]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/b.png" /></a><a title="'.__("Italic", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[i]", "[/i]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/i.png" /></a> <a title="'.__("Underline", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[u]", "[/u]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/u.png" /></a><a title="'.__("Strikethrough", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[s]", "[/s]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/s.png" /></a><a title="' . __("Font size in pixels") . '" href="javascript:void(0);" onclick=\'surroundTheText("[font size=]", "[/font]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/size.png" /></a><a title="Image or text to center" href="javascript:void(0);" onclick=\'surroundTheText("[center]", "[/center]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/center.png" /></a><a title="Align image or text left" href="javascript:void(0);" onclick=\'surroundTheText("[left]", "[/left]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/left.png" /></a><a title="Right align image or text " href="javascript:void(0);" onclick=\'surroundTheText("[right]", "[/right]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/right.png" /></a><a title="'.__("Code", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[code]", "[/code]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/code.png" /></a><a title="'.__("Quote", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[quote]", "[/quote]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/quote.png" /></a><a title="' . __("Quote Title", "cartpaujpm") . '" href="avascript:void(0);" onclick=\'surroundTheText("[quotetitle]", "[/quotetitle]", document.forms.message.message_content); return false;\'><img src="' .$this->pluginURL. '/images/bbc/quotetitle.png" /></a><a title="'.__("List", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[list]", "[/list]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/list.png" /></a><a title="'.__("List item", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[*]", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/li.png" /></a><a title="'.__("Link", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[url]", "[/url]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/url.png" /></a><a title="'.__("Image", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[img]", "[/img]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/img.png" /></a><a title="'.__("Email", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[email]", "[/email]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/email.png" /></a><a title="'.__("Add Hex Color", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[color=#]", "[/color]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/color.png" /></a><a title="'.__("Embed", "cartpaujpm").'" href="javascript:void(0);" onclick=\'surroundTheText("[embed]", "[/embed]", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/bbc/yt.png" /></a>
+			</div>';
 
       return $button;
     }
+public function form_smilies()
+    {
+      $button = '<div class="forum_smilies">
+	  
+	  <a title="' . __("Smile", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :) ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/smile.gif" /></a>
+	  
+	  <a title="' . __("Big Grin", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :D ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/biggrin.gif" /></a>
+	  
+	  <a title="' . __("Sad", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :( ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/sad.gif" /></a><a title="' . __("Neutral", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :| ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/neutral.gif" /></a><a title="' . __("Razz", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :P ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/razz.gif" /></a><a title="' . __("Mad", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :x ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/mad.gif" /></a><a title="' . __("Confused", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :? ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/confused.gif" /></a><a title="' . __("Eek!", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" 8O ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/eek.gif" /></a><a title="' . __("Wink", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" ;) ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/wink.gif" /></a><a title="' . __("Surprised", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :o ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/surprised.gif" /></a><a title="' . __("Cool", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" 8-) ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/cool.gif" /></a><a title="' . __("confused", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :? ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/confused.gif" /></a><a title="' . __("Lol", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :lol: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/lol.gif" /></a><a title="' . __("Cry", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :cry: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/cry.gif" /></a><a title="' . __("redface", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :oops: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/redface.gif" /></a><a title="' . __("rolleyes", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :roll: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/rolleyes.gif" /></a><a title="' . __("exclaim", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :!: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/exclaim.gif" /></a><a title="' . __("question", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :?: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/question.gif" /></a><a title="' . __("idea", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :idea: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/idea.gif" /></a><a title="' . __("arrow", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :arrow: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/arrow.gif" /></a><a title="' . __("mrgreen", "mingleforum") . '" href="javascript:void(0);" onclick=\'surroundTheText(" :mrgreen: ", "", document.forms.message.message_content); return false;\'><img src="'.$this->pluginURL.'/images/smilies/mrgreen.gif" /></a>
+      </div>';
 
+      return $button;
+    }
     function output_filter($string)
     {
       $parser = new cartpaujBBCParser();
